@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>nginx-app</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body  { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 720px; margin: 4rem auto; padding: 0 1rem; line-height: 1.5; }
+    h1    { margin-bottom: 0; }
+    .sub  { color: #888; margin-top: 0.25rem; }
+    code  { background: rgba(127,127,127,0.15); padding: 0 .25rem; border-radius: 3px; }
+    .grid { display: grid; grid-template-columns: 8rem 1fr; gap: .25rem 1rem; margin-top: 1.5rem; }
+    .grid div:nth-child(odd) { color: #888; }
+    .pill { display:inline-block; padding:.1rem .5rem; border-radius:1rem;
+            background:#2ea043; color:white; font-size:.85rem; }
+  </style>
+</head>
+<body>
+  <h1>nginx-app <span class="pill">running</span></h1>
+  <p class="sub">A tiny static site served by nginx, deployed by CI/CD.</p>
+
+  <div class="grid">
+    <div>Version</div>     <div><code id="version">…</code></div>
+    <div>Commit</div>      <div><code id="commit">…</code></div>
+    <div>Built</div>       <div><code id="built">…</code></div>
+    <div>Served by</div>   <div><code id="host">nginx</code></div>
+  </div>
+
+  <p style="margin-top:2rem;">
+    Health check: <a href="/health"><code>/health</code></a> ·
+    Build info:   <a href="/version.json"><code>/version.json</code></a>
+  </p>
+
+  <script>
+    fetch('/version.json')
+      .then(r => r.json())
+      .then(v => {
+        document.getElementById('version').textContent = v.version || 'dev';
+        document.getElementById('commit').textContent  = v.commit  || 'unknown';
+        document.getElementById('built').textContent   = v.built   || 'unknown';
+      })
+      .catch(() => {});
+  </script>
+</body>
+</html>
+

@@ -1,11 +1,11 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: demo-app
-  namespace: demo-app
+  name: nginx-app
+  namespace: nginx-app
   labels:
-    app.kubernetes.io/name: demo-app
-    app.kubernetes.io/part-of: demo-app
+    app.kubernetes.io/name: nginx-app
+    app.kubernetes.io/part-of: nginx-app
 spec:
   replicas: 2
   revisionHistoryLimit: 5
@@ -13,49 +13,38 @@ spec:
     type: RollingUpdate
     rollingUpdate:
       maxSurge: 1
-      maxUnavailable: 0          # zero-downtime rollouts
+      maxUnavailable: 0
   selector:
     matchLabels:
-      app.kubernetes.io/name: demo-app
+      app.kubernetes.io/name: nginx-app
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: demo-app
+        app.kubernetes.io/name: nginx-app
     spec:
-      # Spread pods across nodes when possible.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: demo-app
+              app.kubernetes.io/name: nginx-app
       containers:
-        - name: app
-          # Image is overwritten by CI (`kubectl set image …`); the tag here is
-          # just a sensible default for first-time `kubectl apply`.
-          image: ghcr.io/REPLACE_ME/demo-app:latest
+        - name: nginx
+          # Overwritten by CI with the immutable @digest of the pushed image.
+          # This default is just for first-time `kubectl apply`.
+          image: ghcr.io/REPLACE_ME/nginx-app:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
-          env:
-            - name: PORT
-              value: "8080"
-            - name: VERSION
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.labels['app.kubernetes.io/version']
-          envFrom:
-            - configMapRef:
-                name: demo-app-config
           resources:
             requests:
-              cpu: "50m"
-              memory: "32Mi"
+              cpu: "20m"
+              memory: "16Mi"
             limits:
-              cpu: "200m"
-              memory: "128Mi"
+              cpu: "100m"
+              memory: "64Mi"
           readinessProbe:
             httpGet: { path: /health, port: http }
             initialDelaySeconds: 1
@@ -74,7 +63,14 @@ spec:
               drop: ["ALL"]
             seccompProfile:
               type: RuntimeDefault
-      # Image pull secret for GHCR (created in README step 3).
+          # nginx needs a few writable paths even with readOnlyRootFilesystem.
+          volumeMounts:
+            - { name: tmp,        mountPath: /tmp }
+            - { name: cache,      mountPath: /var/cache/nginx }
+            - { name: run,        mountPath: /var/run }
+      volumes:
+        - { name: tmp,   emptyDir: {} }
+        - { name: cache, emptyDir: {} }
+        - { name: run,   emptyDir: {} }
       imagePullSecrets:
         - name: ghcr-pull
-
