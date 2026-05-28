@@ -1,0 +1,162 @@
+name: ci-cd
+
+# Build, test, push image to GHCR, then deploy to the Kubernetes cluster.
+#
+# Required GitHub repository secrets:
+#   KUBE_CONFIG  - base64-encoded kubeconfig with permissions to update the
+#                  demo-app Deployment.  Create with:
+#                    base64 -w0 ~/.kube/config
+#
+# Optional repository variables (Settings -> Variables):
+#   IMAGE_NAME   - defaults to "${{ github.repository }}/demo-app"
+#   NAMESPACE    - defaults to "demo-app"
+#   DEPLOYMENT   - defaults to "demo-app"
+#   CONTAINER    - defaults to "app"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "Dockerfile"
+      - "k8s/**"
+      - ".github/workflows/ci-cd.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write          # push to GHCR
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  NAMESPACE: demo-app
+  DEPLOYMENT: demo-app
+  CONTAINER: app
+
+jobs:
+  # --- Stage 1: tests --------------------------------------------------------
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+          cache-dependency-path: app/go.sum
+
+      - name: go vet
+        working-directory: app
+        run: go vet ./...
+
+      - name: go test
+        working-directory: app
+        run: go test ./... -race -count=1
+
+  # --- Stage 2: build & push image ------------------------------------------
+  build:
+    name: Build & push image
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build & push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # --- Stage 3: deploy to k8s -----------------------------------------------
+  deploy:
+    name: Deploy to Kubernetes
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production       # add reviewers in repo Settings if you want approval gates
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.30.2"
+
+      - name: Configure kubeconfig
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "$KUBE_CONFIG" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+          kubectl cluster-info
+
+      # Apply the static manifests first so namespace/svc/cm exist.
+      # This is safe to re-run; only the Deployment image is patched below.
+      - name: Apply baseline manifests
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/service.yaml
+          # Apply Deployment if it doesn't exist yet (first deploy).
+          kubectl -n "$NAMESPACE" get deploy "$DEPLOYMENT" >/dev/null 2>&1 \
+            || kubectl apply -f k8s/deployment.yaml
+
+      - name: Roll out new image
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}"
+          # GHCR's "sha-<long>" tag matches the docker/metadata-action format.
+          # Fallback to the @digest form which is the most precise:
+          IMAGE_DIGEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}"
+          echo "Deploying $IMAGE_DIGEST"
+          kubectl -n "$NAMESPACE" set image \
+            deployment/"$DEPLOYMENT" \
+            "$CONTAINER"="$IMAGE_DIGEST" \
+            --record=false
+
+      - name: Wait for rollout
+        run: |
+          kubectl -n "$NAMESPACE" rollout status \
+            deployment/"$DEPLOYMENT" --timeout=3m
+
+      - name: Smoke test (in-cluster)
+        run: |
+          # Hit /health from inside the cluster using a throwaway pod.
+          kubectl -n "$NAMESPACE" run smoke-${{ github.run_id }} \
+            --rm -i --restart=Never --image=curlimages/curl:8.10.1 -- \
+            sh -c 'curl -fsS http://demo-app/health && echo'
