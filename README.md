@@ -85,7 +85,7 @@ version:
    ```bash
    kubectl -n nginx-app create secret docker-registry ghcr-pull \
      --docker-server=ghcr.io \
-     --docker-username=<github-username> \
+     --docker-username=lnthien97 \
      --docker-password=<PAT-with-read:packages>
    ```
 
